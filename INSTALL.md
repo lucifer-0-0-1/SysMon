@@ -2,36 +2,16 @@
 
 ## System Dependencies
 
-Laptop Monitor requires the following system dependencies:
+Laptop Monitor needs Python 3.9+ and Qt 6 (PySide6).
 
-1. **Tkinter** - For GUI interface
-2. **Python 3.6+** - Core Python interpreter
-
-### Installing Tkinter
-
-#### Arch Linux / Manjaro / Garuda
+#### Arch Linux / Manjaro / EndeavourOS / Garuda
 ```bash
-sudo pacman -S tk
+sudo pacman -S python-psutil python-dotenv pyside6
 ```
+Or install the package itself (see README), which pulls these in.
 
-#### Ubuntu / Debian / Linux Mint
-```bash
-sudo apt-get update
-sudo apt-get install python3-tk
-```
-
-#### Fedora / CentOS / RHEL
-```bash
-sudo dnf install python3-tkinter
-```
-
-#### openSUSE
-```bash
-sudo zypper install python3-tk
-```
-
-#### Other Distributions
-Look for packages named `tk`, `python3-tk`, or `python3-tkinter` in your distribution's repository.
+#### Other distributions
+`pip install -r requirements.txt` inside a virtualenv (below) brings in PySide6.
 
 ## Python Dependencies
 
@@ -48,30 +28,24 @@ pip install -r requirements.txt
 
 ## Installation Steps
 
-1. Install system dependencies (Tkinter)
+1. Install system dependencies
 2. Clone/download this repository
 3. Create and activate virtual environment
 4. Install Python dependencies
-5. Configure fan control sudo access (see below)
+5. Install the fan control helper (see below)
 6. Run the application
 
 ## Fan Control Setup
 
-To enable fan control, you need to set up passwordless sudo for specific commands:
-
-1. Run `sudo visudo`
-2. Add the following line (replace `yourusername` with your actual username):
-   ```
-   yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/hwmon/hwmon5/pwm*
-   yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/hwmon/hwmon5/pwm*_enable
-   ```
-3. Save and exit
-
-### Alternative (Less Secure)
-If you prefer broader access (not recommended for security):
+The packaged app (`makepkg -si`, see README) already includes this. When running from source, install the small root helper and its polkit rule once:
+```bash
+sudo install -Dm755 fanctl /usr/lib/laptop-monitor/fanctl
+sudo install -Dm644 packaging/org.laptopmonitor.fanctl.policy /usr/share/polkit-1/actions/
 ```
-yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee
-```
+The helper only accepts `/sys/class/hwmon/hwmonN/pwmM[_enable]` paths and in-range values.
+
+> Don't use a sudoers rule like `NOPASSWD: /usr/bin/tee /sys/class/hwmon/hwmon5/pwm*`. Sudoers wildcards also match spaces and `/`,
+> so it allows `sudo tee /sys/class/hwmon/hwmon5/pwm1 /etc/passwd`. If you added one earlier, remove it with `sudo visudo`.
 
 ## Verification
 
@@ -92,15 +66,14 @@ python main.py
 
 ## Troubleshooting
 
-### "ImportError: libtk8.6.so: cannot open shared object file"
-This indicates Tkinter is not properly installed. Reinstall the Tkinter package for your distribution.
+### "qt.qpa.plugin: Could not load the Qt platform plugin"
+Install your distribution's Qt 6 Wayland/X11 platform packages (Arch: `qt6-wayland`).
 
 ### Fan control not working
-1. Verify your user is in the sudoers file with the correct NOPASSWD entries
-2. Test sudo access: `sudo -n echo "test"`
-3. Check if the fan control paths exist: `ls /sys/class/hwmon/hwmon5/pwm*`
+1. Verify the helper is installed: `ls -l /usr/lib/laptop-monitor/fanctl`
+2. Test it: `pkexec /usr/lib/laptop-monitor/fanctl /sys/class/hwmon/hwmonN/pwm1_enable 2`
+3. Check that a PWM device exists: `ls /sys/class/hwmon/hwmon*/pwm*`
 4. Ensure the hardware monitoring interface is available on your laptop
 
-### Virtual environment activation issues
-- On Windows, use `venv\Scripts\activate`
-- Ensure you have virtualenv installed: `pip install virtualenv`
+### NVIDIA GPU shows "suspended"
+That's expected. The dGPU is asleep to save power, and the app won't wake it. Stats appear while it's in use.

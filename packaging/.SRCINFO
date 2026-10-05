@@ -1,0 +1,18 @@
+pkgbase = laptop-monitor
+	pkgdesc = Lightweight laptop monitor: temperatures, usage, GPU, battery, processes and PWM fan control
+	pkgver = 1.0.0
+	pkgrel = 1
+	url = https://github.com/lucifer-0-0-1/SysMon
+	arch = any
+	license = Apache-2.0
+	depends = python
+	depends = python-psutil
+	depends = python-dotenv
+	depends = pyside6
+	optdepends = polkit: fan control without sudo
+	optdepends = nvidia-utils: NVIDIA GPU usage, power and VRAM stats
+	optdepends = libnotify: desktop alerts for high temperature and low battery
+	source = laptop-monitor-1.0.0.tar.gz::https://github.com/lucifer-0-0-1/SysMon/archive/refs/tags/v1.0.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = laptop-monitor

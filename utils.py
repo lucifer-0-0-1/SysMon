@@ -40,18 +40,6 @@ class Utils:
             return False, "", str(e)
 
     @staticmethod
-    def setup_passwordless_sudo():
-        """Help user set up passwordless sudo for fan control"""
-        print("To enable fan control, you need to set up passwordless sudo for specific commands.")
-        print("Please run: sudo visudo")
-        print("Then add the following line (replace 'yourusername' with your actual username):")
-        print("yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/hwmon/hwmon5/pwm*")
-        print("yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/hwmon/hwmon5/pwm*_enable")
-        print("\nOr for broader access (less secure):")
-        print("yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee")
-        return False
-
-    @staticmethod
     def get_system_info():
         """Get basic system information"""
         info = {}

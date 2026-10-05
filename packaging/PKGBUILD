@@ -1,0 +1,27 @@
+# Maintainer: lucifer-0-0-1 <amritam.leon@gmail.com>
+pkgname=laptop-monitor
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Lightweight laptop monitor: temperatures, usage, GPU, battery, processes and PWM fan control"
+arch=('any')
+url="https://github.com/lucifer-0-0-1/SysMon"
+license=('Apache-2.0')
+depends=('python' 'python-psutil' 'python-dotenv' 'pyside6')
+optdepends=('polkit: fan control without sudo'
+            'nvidia-utils: NVIDIA GPU usage, power and VRAM stats'
+            'libnotify: desktop alerts for high temperature and low battery')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # run `updpkgsums` after the v$pkgver tag is pushed
+
+package() {
+  cd "SysMon-$pkgver"
+  local share="$pkgdir/usr/share/$pkgname"
+  install -Dm644 -t "$share" main.py monitor.py fan_control.py config.py utils.py
+  install -Dm644 -t "$share/plugins" plugins/*.py
+  python -m compileall -q -d "/usr/share/$pkgname" "$share"
+  install -Dm755 fanctl "$pkgdir/usr/lib/$pkgname/fanctl"
+  install -Dm755 packaging/laptop-monitor "$pkgdir/usr/bin/laptop-monitor"
+  install -Dm644 packaging/laptop-monitor.desktop "$pkgdir/usr/share/applications/laptop-monitor.desktop"
+  install -Dm644 packaging/org.laptopmonitor.fanctl.policy "$pkgdir/usr/share/polkit-1/actions/org.laptopmonitor.fanctl.policy"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

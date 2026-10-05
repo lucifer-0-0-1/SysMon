@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Laptop Monitor
+GenericName=System Monitor
+Comment=Monitor temperatures, usage, battery, processes and control laptop fans
+Exec=laptop-monitor
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=fan;temperature;cpu;gpu;battery;sensors;

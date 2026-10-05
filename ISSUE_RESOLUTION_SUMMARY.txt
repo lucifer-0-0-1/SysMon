@@ -8,7 +8,7 @@
                  set_auto_mode_fixed() work correctly
    • VERIFICATION: 
                    - Manual mode: pwm1_enable=1, pwm2_enable=1
-                   - Auto mode:   pwm1_enable=2, pwm2_enable=1
+                   - Auto mode:   pwm1_enable=2, pwm2_enable=2
                    - Both files change correctly as expected
 
 ✅ ISSUE 2: Slow Fan Speed Polling  

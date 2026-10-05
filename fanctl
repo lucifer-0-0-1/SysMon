@@ -1,0 +1,29 @@
+#!/usr/bin/python3
+"""Privileged helper: write a value to a hwmon pwm file. Run via pkexec.
+
+usage: fanctl /sys/class/hwmon/hwmonN/pwmM[_enable] VALUE
+"""
+import re
+import sys
+
+
+def validate(path, value):
+    """Return the int to write, or raise ValueError. Only hwmon pwm files, only sane values."""
+    m = re.fullmatch(r"/sys/class/hwmon/hwmon\d+/pwm\d+(_enable)?", path)
+    if not m or not value.isdigit():
+        raise ValueError("bad arguments")
+    v = int(value)
+    if v > (2 if m.group(1) else 255):
+        raise ValueError("value out of range")
+    return v
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    try:
+        value = validate(sys.argv[1], sys.argv[2])
+        with open(sys.argv[1], "w") as f:
+            f.write(f"{value}\n")
+    except (ValueError, OSError) as e:
+        sys.exit(f"fanctl: {e}")

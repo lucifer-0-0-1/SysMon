@@ -3,161 +3,227 @@
 System monitoring module for Laptop Monitor
 """
 
-import psutil
-import subprocess
+import glob
 import os
-import re
+import subprocess
+import time
+
+import psutil
+
+
+def _read(path, default=None):
+    """Read a sysfs file, returning default on any failure"""
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return default
+
+
+def find_hwmon(name):
+    """Return the hwmon dir whose 'name' matches; hwmonN numbering changes between boots"""
+    for path in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        if _read(os.path.join(path, "name")) == name:
+            return path
+    return None
+
 
 class Monitor:
-    def __init__(self):
-        self.psutil_available = self._check_psutil()
+    # Sensor chips in the order we trust them for "the CPU temperature"
+    CPU_CHIPS = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "acpitz")
+    GPU_CHIPS = ("amdgpu", "nouveau", "radeon")
 
-    def _check_psutil(self):
-        """Check if psutil is available"""
-        try:
-            import psutil
-            return True
-        except ImportError:
-            return False
+    def __init__(self, gpu_poll_seconds=10):
+        self.gpu_poll_seconds = gpu_poll_seconds
+        self._last_net = self._last_disk = None
+        self._smi = None
+        self._smi_time = 0
+        self._gpu_cache = {}
+        psutil.cpu_percent(percpu=True)  # prime: first non-blocking call always returns 0
 
+    # ---- CPU -------------------------------------------------------------
     def get_cpu_temperature(self):
-        """Get CPU temperature from sysfs"""
-        try:
-            # Try common paths for temperature sensors
-            temp_paths = [
-                "/sys/class/hwmon/hwmon5/temp1_input",  # Original from user code
-                "/sys/class/thermal/thermal_zone0/temp",
-                "/sys/class/hwmon/hwmon0/temp1_input",
-                "/sys/class/hwmon/hwmon1/temp1_input"
-            ]
-
-            for path in temp_paths:
-                if os.path.exists(path):
-                    with open(path, 'r') as f:
-                        temp_raw = f.read().strip()
-                        # Convert from millidegrees to Celsius if needed
-                        temp = float(temp_raw)
-                        if temp > 1000:  # Likely in millidegrees
-                            temp = temp / 1000.0
-                        return round(temp, 1)
-        except (FileNotFoundError, ValueError, PermissionError):
-            pass
-
-        # Fallback to psutil if available
-        if self.psutil_available:
-            try:
-                temps = psutil.sensors_temperatures()
-                if 'coretemp' in temps:
-                    return round(temps['coretemp'][0].current, 1)
-                elif 'cpu_thermal' in temps:
-                    return round(temps['cpu_thermal'][0].current, 1)
-            except (AttributeError, KeyError):
-                pass
-
-        return 0.0
-
-    def get_gpu_temperature(self):
-        """Get GPU temperature from sysfs"""
-        try:
-            # Try common paths for GPU temperature
-            temp_paths = [
-                "/sys/class/hwmon/hwmon5/temp3_input",  # Original from user code
-                "/sys/class/drm/card0/device/hwmon/hwmon0/temp1_input",
-                "/sys/class/hwmon/hwmon2/temp1_input"
-            ]
-
-            for path in temp_paths:
-                if os.path.exists(path):
-                    with open(path, 'r') as f:
-                        temp_raw = f.read().strip()
-                        temp = float(temp_raw)
-                        if temp > 1000:  # Likely in millidegrees
-                            temp = temp / 1000.0
-                        return round(temp, 1)
-        except (FileNotFoundError, ValueError, PermissionError):
-            pass
-
+        """CPU package temperature in Celsius (0.0 if unknown)"""
+        temps = psutil.sensors_temperatures()
+        for chip in self.CPU_CHIPS:
+            entries = temps.get(chip)
+            if entries:
+                # Prefer the package/Tctl reading over individual cores
+                for e in entries:
+                    if e.label.startswith(("Package", "Tctl", "Tdie")):
+                        return round(e.current, 1)
+                return round(entries[0].current, 1)
         return 0.0
 
     def get_cpu_usage(self):
-        """Get CPU usage percentage"""
-        if self.psutil_available:
-            try:
-                return psutil.cpu_percent(interval=0.1)
-            except:
-                pass
-        return 0.0
+        """CPU usage % since the previous call (non-blocking)"""
+        return psutil.cpu_percent(interval=None)
+
+    def get_per_cpu_usage(self):
+        return psutil.cpu_percent(interval=None, percpu=True)
+
+    def get_cpu_info(self):
+        freq = psutil.cpu_freq()
+        return {
+            'cores': psutil.cpu_count(logical=False),
+            'threads': psutil.cpu_count(),
+            'freq_mhz': round(freq.current) if freq else 0,
+            'freq_max_mhz': round(freq.max) if freq else 0,
+            'load_avg': os.getloadavg(),
+            'uptime_s': time.time() - psutil.boot_time(),
+        }
+
+    # ---- GPU -------------------------------------------------------------
+    def get_gpu_temperature(self):
+        """GPU temperature in Celsius (0.0 if unknown)"""
+        temps = psutil.sensors_temperatures()
+        for chip in self.GPU_CHIPS:
+            if temps.get(chip):
+                return round(temps[chip][0].current, 1)
+        gpu = self.get_gpu_info()
+        if gpu.get('temp'):
+            return float(gpu['temp'])
+        # acer-wmi exposes the dGPU sensor as temp3 on Nitro/Predator laptops
+        acer = find_hwmon("acer")
+        raw = _read(f"{acer}/temp3_input") if acer else None
+        return round(int(raw) / 1000, 1) if raw and raw.isdigit() else 0.0
 
     def get_gpu_usage(self):
-        """Get GPU usage percentage (if available)"""
-        # This is platform-specific and may require additional tools
-        # For now, return placeholder
-        return 0.0
+        return float(self.get_gpu_info().get('util', 0))
 
-    def get_memory_usage(self):
-        """Get memory usage percentage"""
-        if self.psutil_available:
+    def get_gpu_info(self):
+        """Discrete GPU stats. Never wakes a runtime-suspended NVIDIA GPU."""
+        for dev in glob.glob("/sys/bus/pci/devices/*"):
+            if not (_read(f"{dev}/class") or "").startswith("0x03"):
+                continue
+            vendor = _read(f"{dev}/vendor")
+            if vendor == "0x1002":  # AMD: plain sysfs reads, cheap
+                busy = _read(f"{dev}/gpu_busy_percent")
+                if busy is None:
+                    continue
+                return {
+                    'name': 'AMD GPU', 'state': 'active', 'util': int(busy),
+                    'mem_used': int(_read(f"{dev}/mem_info_vram_used", 0)) // 2**20,
+                    'mem_total': int(_read(f"{dev}/mem_info_vram_total", 0)) // 2**20,
+                }
+            if vendor == "0x10de":
+                if _read(f"{dev}/power/runtime_status") == "suspended":
+                    return {'name': 'NVIDIA GPU', 'state': 'suspended (power saving)'}
+                return self._poll_nvidia_smi()
+        return {}
+
+    def _poll_nvidia_smi(self):
+        """Run nvidia-smi asynchronously so the GUI never blocks on it"""
+        if self._smi and self._smi.poll() is not None:
+            out = self._smi.stdout.read()
+            self._smi = None
+            parts = [p.strip() for p in out.split(",")]
+            if len(parts) == 7:
+                keys = ('name', 'temp', 'util', 'mem_used', 'mem_total', 'power', 'clock')
+                self._gpu_cache = dict(zip(keys, parts), state='active')
+        # ponytail: fixed poll period; must exceed the driver's autosuspend delay or the dGPU never sleeps
+        if self._smi is None and time.time() - self._smi_time >= self.gpu_poll_seconds:
+            self._smi_time = time.time()
             try:
-                memory = psutil.virtual_memory()
-                return memory.percent
-            except:
-                pass
-        return 0.0
+                self._smi = subprocess.Popen(
+                    ["nvidia-smi", "--query-gpu=name,temperature.gpu,utilization.gpu,memory.used,"
+                     "memory.total,power.draw,clocks.gr", "--format=csv,noheader,nounits"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            except OSError:
+                return {'name': 'NVIDIA GPU', 'state': 'nvidia-smi not installed'}
+        return self._gpu_cache or {'name': 'NVIDIA GPU', 'state': 'active'}
+
+    # ---- Memory / disk / network ----------------------------------------
+    def get_memory_usage(self):
+        return psutil.virtual_memory().percent
+
+    def get_memory_info(self):
+        return psutil.virtual_memory(), psutil.swap_memory()
 
     def get_disk_usage(self):
-        """Get disk usage percentage for root partition"""
-        if self.psutil_available:
+        return psutil.disk_usage('/').percent
+
+    def get_partitions(self):
+        result = []
+        for p in psutil.disk_partitions():
             try:
-                disk = psutil.disk_usage('/')
-                return (disk.used / disk.total) * 100
-            except:
+                result.append((p, psutil.disk_usage(p.mountpoint)))
+            except OSError:
                 pass
-        return 0.0
+        return result
 
     def get_network_stats(self):
-        """Get network I/O statistics"""
-        if self.psutil_available:
-            try:
-                net_io = psutil.net_io_counters()
-                return {
-                    'bytes_sent': net_io.bytes_sent,
-                    'bytes_recv': net_io.bytes_recv,
-                    'packets_sent': net_io.packets_sent,
-                    'packets_recv': net_io.packets_recv
-                }
-            except:
-                pass
-        return {'bytes_sent': 0, 'bytes_recv': 0, 'packets_sent': 0, 'packets_recv': 0}
+        n = psutil.net_io_counters()
+        return {'bytes_sent': n.bytes_sent, 'bytes_recv': n.bytes_recv,
+                'packets_sent': n.packets_sent, 'packets_recv': n.packets_recv}
 
+    def get_network_rates(self):
+        """Per-interface (down, up) bytes/s since the previous call"""
+        now, counters = time.time(), psutil.net_io_counters(pernic=True)
+        rates = _rates(self._last_net, (now, counters), lambda c: (c.bytes_recv, c.bytes_sent))
+        self._last_net = (now, counters)
+        return rates
+
+    def get_disk_rates(self):
+        """Per-disk (read, write) bytes/s since the previous call"""
+        now, counters = time.time(), psutil.disk_io_counters(perdisk=True) or {}
+        rates = _rates(self._last_disk, (now, counters), lambda c: (c.read_bytes, c.write_bytes))
+        self._last_disk = (now, counters)
+        return rates
+
+    # ---- Fans / battery / processes -------------------------------------
     def get_fan_speeds(self):
-        """Get fan speeds from sysfs (if available)"""
-        fan_data = {}
-        try:
-            # Look for fan speed sensors
-            hwmon_path = "/sys/class/hwmon/"
-            if os.path.exists(hwmon_path):
-                for hwmon in os.listdir(hwmon_path):
-                    hwmon_full = os.path.join(hwmon_path, hwmon)
-                    if os.path.isdir(hwmon_full):
-                        # Look for fan input files
-                        for file in os.listdir(hwmon_full):
-                            if 'fan' in file and 'input' in file:
-                                fan_path = os.path.join(hwmon_full, file)
-                                try:
-                                    with open(fan_path, 'r') as f:
-                                        speed = f.read().strip()
-                                        fan_data[file] = int(speed)
-                                except (ValueError, PermissionError):
-                                    pass
-        except (FileNotFoundError, PermissionError):
-            pass
-        return fan_data
+        """{'chip fanN': rpm} for every fan the kernel exposes"""
+        return {f"{chip} {f.label or i + 1}": f.current
+                for chip, fans in psutil.sensors_fans().items()
+                for i, f in enumerate(fans)}
+
+    def get_all_temperatures(self):
+        return psutil.sensors_temperatures()
+
+    def get_battery(self):
+        bat = psutil.sensors_battery()
+        if bat is None:
+            return None
+        info = {'percent': round(bat.percent, 1), 'plugged': bat.power_plugged,
+                'secsleft': bat.secsleft if bat.secsleft >= 0 else None}
+        for path in glob.glob("/sys/class/power_supply/BAT*"):
+            info['status'] = _read(f"{path}/status", "Unknown")
+            info['cycles'] = _read(f"{path}/cycle_count")
+            # Drivers report either energy (µWh/µW) or charge (µAh/µA) — handle both
+            power = _read(f"{path}/power_now")
+            cur, volt = _read(f"{path}/current_now"), _read(f"{path}/voltage_now")
+            if power:
+                info['watts'] = int(power) / 1e6
+            elif cur and volt:
+                info['watts'] = int(cur) * int(volt) / 1e12
+            for kind in ("energy", "charge"):
+                full, design = _read(f"{path}/{kind}_full"), _read(f"{path}/{kind}_full_design")
+                if full and design and int(design):
+                    info['health'] = round(100 * int(full) / int(design), 1)
+                    break
+            break
+        return info
+
+    def get_processes(self):
+        attrs = ['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'status']
+        return [p.info for p in psutil.process_iter(attrs)]
+
+
+def _rates(prev, cur, pick):
+    if prev is None:
+        return {}
+    dt = (cur[0] - prev[0]) or 1
+    return {k: tuple(max(0, (a - b) / dt) for a, b in zip(pick(c), pick(prev[1][k])))
+            for k, c in cur[1].items() if k in prev[1]}
+
 
 if __name__ == "__main__":
-    # Test the monitor
-    monitor = Monitor()
-    print(f"CPU Temp: {monitor.get_cpu_temperature()}°C")
-    print(f"GPU Temp: {monitor.get_gpu_temperature()}°C")
-    print(f"CPU Usage: {monitor.get_cpu_usage()}%")
-    print(f"Memory Usage: {monitor.get_memory_usage()}%")
-    print(f"Disk Usage: {monitor.get_disk_usage()}%")
+    m = Monitor()
+    time.sleep(0.5)
+    print(f"CPU Temp: {m.get_cpu_temperature()}°C  GPU Temp: {m.get_gpu_temperature()}°C")
+    print(f"CPU Usage: {m.get_cpu_usage()}%  Memory: {m.get_memory_usage()}%  Disk: {m.get_disk_usage()}%")
+    print(f"CPU: {m.get_cpu_info()}")
+    print(f"GPU: {m.get_gpu_info()}")
+    print(f"Battery: {m.get_battery()}")
+    print(f"Fans: {m.get_fan_speeds()}")

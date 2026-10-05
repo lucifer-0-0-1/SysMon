@@ -3,8 +3,10 @@
 Example plugin: Battery monitor for laptops
 """
 
-import psutil
+import glob
 import os
+
+import psutil
 
 def get_data():
     """Get battery information"""
@@ -22,8 +24,7 @@ def get_data():
     # Fallback for systems without psutil battery support
     try:
         # Try to read from sysfs
-        bat_path = "/sys/class/power_supply/BAT0/"
-        if os.path.exists(bat_path):
+        for bat_path in glob.glob("/sys/class/power_supply/BAT*"):
             with open(os.path.join(bat_path, "capacity"), 'r') as f:
                 percent = int(f.read().strip())
 

@@ -1,104 +1,59 @@
 # Laptop Monitor
 
-A lightweight system monitoring and fan control application for Linux laptops.
+A system monitor and fan controller for Linux laptops, built with Qt (PySide6) and psutil. It follows your desktop theme, including dark mode, and uses about 100 MB of RAM.
 
 ## Features
 
-- **System Monitoring**: CPU/GPU temperature, usage, memory, disk, and network stats
-- **Fan Control**: Manual slider control and automatic temperature-based modes
-- **Lightweight**: Built with Tkinter for minimal RAM usage
-- **Extensible**: Plugin system for custom metrics
-- **Cross-platform**: Works on most Linux distributions
-- **Open Source**: MIT License
+- **Dashboard**: live graphs of CPU usage, CPU/GPU temperature, RAM/swap and network throughput, plus tiles for CPU, GPU, memory, battery and fans
+- **Processes**: sortable, filterable process list; end (SIGTERM) or kill (SIGKILL) a process
+- **Details**: per-core usage and clock, every temperature sensor with high/critical limits, all fans, battery power draw / health / cycles, memory breakdown, disk usage and I/O rates, per-interface network rates and IPs
+- **GPU**: NVIDIA (via `nvidia-smi`) and AMD (sysfs). A runtime-suspended NVIDIA dGPU is never woken, so monitoring doesn't drain your battery
+- **Fan control**: manual PWM sliders or firmware auto mode. The fan device is auto-detected (no hard-coded `hwmon5`), and fans return to auto when the app closes
+- **Alerts**: desktop notifications for high CPU/GPU temperature and low battery
+- **Plugins**: drop a `.py` file with `get_data()` into `~/.config/laptop-monitor/plugins/`
+- **Settings tab**: saved to `~/.config/laptop-monitor/config.env`
 
-## Installation
+## Install (Arch Linux, Manjaro, EndeavourOS, Garuda, Arch Linux ARM)
 
-### Prerequisites
-
-- Python 3.6+
-- pip (Python package installer)
-
-### Setup
-
-1. Clone or download this repository
-2. Create a virtual environment (recommended):
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. Copy the example environment file:
-   ```bash
-   cp .env.example .env
-   ```
-5. Edit `.env` to configure settings as needed
-
-### Fan Control Setup
-
-To enable fan control, you need to set up passwordless sudo for the tee command:
-
-1. Run `sudo visudo`
-2. Add the following line (replace `yourusername` with your actual username):
-   ```
-   yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/hwmon/hwmon5/pwm*
-   yourusername ALL=(ALL) NOPASSWD: /usr/bin/tee /sys/class/hwmon/hwmon5/pwm*_enable
-   ```
-3. Save and exit
-
-## Usage
-
-Run the application:
 ```bash
+git clone https://github.com/lucifer-0-0-1/SysMon.git
+cd SysMon/packaging
+updpkgsums        # once the v1.0.0 tag exists on GitHub
+makepkg -si
+```
+
+Then launch **Laptop Monitor** from your app menu, or run `laptop-monitor`. The package is `arch=any`, so it builds on x86_64 and aarch64.
+
+Fan control in the installed app goes through polkit (`pkexec`), with no sudoers editing. The logged-in desktop user can change fan speed without a password. To require one, change `allow_active` to `auth_admin_keep` in `/usr/share/polkit-1/actions/org.laptopmonitor.fanctl.policy`.
+
+## Run from source
+
+See [INSTALL.md](INSTALL.md).
+
+```bash
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 python main.py
+python test_basic.py   # self-checks
 ```
 
-### GUI Tabs
+## Plugins
 
-1. **Dashboard**: Real-time graphs of temperatures, usage, and fan speeds
-2. **Fan Control**: Manual sliders for CPU/GPU fan speed, auto/manual mode toggle
-3. **Advanced**: Detailed memory, disk, and network monitoring
-4. **Plugins**: Manage and configure additional metric collectors
-5. **Settings**: Application configuration options
-
-## Configuration
-
-All settings can be configured via the `.env` file or through the Settings tab in the GUI.
-
-Key environment variables:
-- `UPDATE_INTERVAL`: Monitoring update interval in milliseconds (default: 2000)
-- `CPU_TEMP_THRESHOLD`: Temperature threshold for auto fan control (default: 75.0)
-- `GPU_TEMP_THRESHOLD`: GPU temperature threshold for auto fan control (default: 80.0)
-- `FAN_MIN_SPEED`: Minimum fan speed (0-255, default: 30)
-- `FAN_MAX_SPEED`: Maximum fan speed (0-255, default: 255)
-
-## Development
-
-### Adding Plugins
-
-Create a new Python file in the `plugins/` directory to add custom metrics.
-Each plugin should follow the basic structure:
 ```python
+# ~/.config/laptop-monitor/plugins/my_metric.py
 def get_data():
-    """Return data to be displayed"""
-    return {"metric_name": value}
+    return {"metric_name": 42}
+
+def get_plugin_info():          # optional
+    return {"name": "My Metric", "version": "1.0"}
 ```
 
-### Testing
+## Releasing
 
-Run unit tests:
-```bash
-python -m pytest tests/
-```
+1. Bump `VERSION` in `main.py` and `pkgver` in `packaging/PKGBUILD`.
+2. Tag and push: `git tag v1.0.0 && git push origin v1.0.0`.
+3. In `packaging/`, run `updpkgsums && makepkg --printsrcinfo > .SRCINFO`. Then build with `makepkg`, or push `PKGBUILD` + `.SRCINFO` to the AUR.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Inspired by the need for lightweight system monitoring on Linux laptops
-- Uses psutil for system monitoring
-- Built with Tkinter for minimal dependencies
+Apache License 2.0. See [LICENSE](LICENSE).

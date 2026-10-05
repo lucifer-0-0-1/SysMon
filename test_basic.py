@@ -70,6 +70,51 @@ def test_utils():
         print(f"✗ Utils test error: {e}")
         return False
 
+def test_fan_control():
+    """FanController discovers a pwm hwmon by content, not by hwmonN index"""
+    import tempfile
+    from fan_control import FanController, find_pwm_hwmon
+    try:
+        with tempfile.TemporaryDirectory() as base:
+            os.makedirs(f"{base}/hwmon0")
+            os.makedirs(f"{base}/hwmon3")
+            for name, value in (("pwm1", "100"), ("pwm2", "50"), ("pwm1_enable", "1"), ("fan1_input", "2500")):
+                with open(f"{base}/hwmon3/{name}", "w") as f:
+                    f.write(value)
+            assert find_pwm_hwmon(base) == f"{base}/hwmon3"
+            fc = FanController(f"{base}/hwmon3")
+            assert fc.fan_count == 2 and fc.get_mode() == 1
+            assert fc.get_fan_speed(1) == 100 and fc.get_fan_rpm(1) == 2500
+            assert fc.set_fan_speed(2, 999) and fc.get_fan_speed(2) == 255  # clamped
+        print("✓ Fan control test")
+        return True
+    except Exception as e:
+        print(f"✗ Fan control test error: {e!r}")
+        return False
+
+def test_fanctl_validation():
+    """The root helper only accepts hwmon pwm paths and in-range values"""
+    from importlib.machinery import SourceFileLoader
+    validate = SourceFileLoader("fanctl", os.path.join(os.path.dirname(os.path.abspath(__file__)), "fanctl")).load_module().validate
+    ok = [("/sys/class/hwmon/hwmon5/pwm1", "128", 128), ("/sys/class/hwmon/hwmon12/pwm2_enable", "2", 2)]
+    bad = [("/sys/class/hwmon/hwmon5/pwm1", "256"), ("/sys/class/hwmon/hwmon5/pwm1_enable", "3"),
+           ("/sys/class/hwmon/hwmon5/pwm1", "-1"), ("/sys/class/hwmon/hwmon5/../../../../etc/pwm1", "1"),
+           ("/etc/shadow", "1"), ("/sys/class/hwmon/hwmon5/pwm1\n", "1")]
+    try:
+        for path, value, expected in ok:
+            assert validate(path, value) == expected, path
+        for path, value in bad:
+            try:
+                validate(path, value)
+            except ValueError:
+                continue
+            raise AssertionError(f"accepted {path} {value}")
+        print("✓ fanctl validation test")
+        return True
+    except Exception as e:
+        print(f"✗ fanctl validation error: {e!r}")
+        return False
+
 def main():
     """Run all tests"""
     print("Running basic tests for Laptop Monitor...\n")
@@ -78,7 +123,9 @@ def main():
         test_imports,
         test_monitor,
         test_config,
-        test_utils
+        test_utils,
+        test_fan_control,
+        test_fanctl_validation,
     ]
 
     passed = 0
