@@ -13,6 +13,6 @@ pkgbase = laptop-monitor
 	optdepends = nvidia-utils: NVIDIA GPU usage, power and VRAM stats
 	optdepends = libnotify: desktop alerts for high temperature and low battery
 	source = laptop-monitor-1.0.0.tar.gz::https://github.com/lucifer-0-0-1/SysMon/archive/refs/tags/v1.0.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = 19124cadce7f75c7361953c423d66114c4ee108e393f80765224eace2464d67f
 
 pkgname = laptop-monitor
