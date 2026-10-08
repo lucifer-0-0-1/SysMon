@@ -117,6 +117,10 @@ def test_fanctl_validation():
 
 def test_live_tree():
     """LiveTree keeps rows keyed: reparents adopted children, drops dead rows (and their dead children)"""
+    import importlib.util
+    if importlib.util.find_spec("PySide6") is None:  # CI's Ubuntu 22.04 has no PySide6 package
+        print("- LiveTree test skipped (PySide6 not installed)")
+        return True
     try:
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication
