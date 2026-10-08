@@ -4,10 +4,13 @@ A system monitor and fan controller for Linux laptops, built with Qt (PySide6) a
 
 ## Features
 
-- **Dashboard**: live graphs of CPU usage, CPU/GPU temperature, RAM/swap and network throughput, plus tiles for CPU, GPU, memory, battery and fans
-- **Processes**: sortable, filterable process list; end (SIGTERM) or kill (SIGKILL) a process
+- **Dashboard**: live graphs of CPU usage, CPU/GPU temperature, RAM/swap, network throughput, GPU usage and disk I/O, plus tiles for CPU, GPU, memory, battery and fans
+- **CPU Cores**: a live usage graph per core
+- **Applications**: desktop apps (grouped by their systemd scope) with total CPU, memory and disk I/O; expand to see each app's processes, or end the whole app
+- **Processes**: sortable, filterable list or parent/child tree with memory, disk read/write, threads, nice and command line; show all / own / user / system processes; right-click to end, kill, send any signal (pause, resume, hang up…) or set priority
 - **Details**: per-core usage and clock, every temperature sensor with high/critical limits, all fans, battery power draw / health / cycles, memory breakdown, disk usage and I/O rates, per-interface network rates and IPs
 - **GPU**: NVIDIA (via `nvidia-smi`) and AMD (sysfs). A runtime-suspended NVIDIA dGPU is never woken, so monitoring doesn't drain your battery
+- **Networking**: switch a connection's DNS between its profile servers and the ones the network hands out (e.g. campus DNS for intranet sites), session-only
 - **Fan control**: manual PWM sliders or firmware auto mode. The fan device is auto-detected (no hard-coded `hwmon5`), and fans return to auto when the app closes
 - **Alerts**: desktop notifications for high CPU/GPU temperature and low battery
 - **Plugins**: drop a `.py` file with `get_data()` into `~/.config/laptop-monitor/plugins/`

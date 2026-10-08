@@ -7,6 +7,7 @@ import glob
 import importlib.util
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -15,11 +16,11 @@ from collections import deque
 import psutil
 from PySide6.QtCore import QPointF, QSortFilterProxyModel, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QDoubleSpinBox,
-                               QFormLayout, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QPushButton, QRadioButton,
-                               QSlider, QSpinBox, QStackedWidget, QTableView, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
+                               QFrame, QGridLayout, QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit,
+                               QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton,
+                               QRadioButton, QSlider, QSpinBox, QStackedWidget, QTreeView, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 # Add the current directory to Python path for imports
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,11 +28,11 @@ sys.path.insert(0, APP_DIR)
 
 from config import DEFAULTS, Config
 from fan_control import FanController, install_helper
-from monitor import Monitor
+from monitor import Monitor, app_id, desktop_entry
 import network as net
 from utils import Utils
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 human = Utils.bytes_to_human_readable
 STYLE = """
 QFrame#card { background: palette(base); border: 1px solid palette(midlight); border-radius: 10px; }
@@ -153,6 +154,88 @@ class Tree(QTreeWidget):
         self.seen = set()
 
 
+class LiveTree(QTreeView):
+    """Sortable, filterable tree of rows keyed by stable ids; refreshes keep scroll/selection/expansion.
+    Sorting uses the raw values (UserRole), the display uses formats[column](value)."""
+    KEY = Qt.UserRole + 1
+
+    def __init__(self, headers, formats, sort_column, filter_column=0):
+        super().__init__(sortingEnabled=True, alternatingRowColors=True, uniformRowHeights=True)
+        self.formats, self.expand_new = formats, False
+        self.source = QStandardItemModel(0, len(headers))
+        self.source.setHorizontalHeaderLabels(headers)
+        self.proxy = QSortFilterProxyModel(filterKeyColumn=filter_column, sortRole=Qt.UserRole,
+                                           filterCaseSensitivity=Qt.CaseInsensitive, recursiveFilteringEnabled=True)
+        self.proxy.setSourceModel(self.source)
+        self.setModel(self.proxy)
+        self.sortByColumn(sort_column, Qt.DescendingOrder)
+        self.items, self.parents = {}, {}
+
+    def clear(self):
+        self.source.removeRows(0, self.source.rowCount())
+        self.items, self.parents = {}, {}
+
+    def update(self, rows):
+        """rows: {key: (parent_key or None, values, icon or None)}; parents missing from rows become roots"""
+        root, placed, created = self.source.invisibleRootItem(), set(), []
+        self.proxy.setDynamicSortFilter(False)  # one re-sort per refresh, not one per changed cell
+
+        def place(key):
+            placed.add(key)
+            parent_key, values, icon = rows[key]
+            if parent_key not in rows or parent_key == key:
+                parent_key = None
+            elif parent_key not in placed:
+                place(parent_key)
+            parent = self.items[parent_key][0] if parent_key is not None else root
+            items = self.items.get(key)
+            if items is None:
+                items = self.items[key] = [QStandardItem() for _ in self.formats]
+                items[0].setData(key, self.KEY)
+                if icon:
+                    items[0].setIcon(icon)
+                for item, v in zip(items, values):
+                    if isinstance(v, (int, float)):
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                parent.appendRow(items)
+                created.append(items[0])
+            elif self.parents[key] != parent_key:  # reparented (e.g. orphan adopted by init)
+                old = self.parents[key]
+                (self.items[old][0] if old is not None else root).takeRow(items[0].row())
+                parent.appendRow(items)
+            self.parents[key] = parent_key
+            for item, fmt, v in zip(items, self.formats, values):
+                if item.data(Qt.UserRole) != v:
+                    item.setData(v, Qt.UserRole)
+                    item.setText("" if v is None else fmt(v))
+
+        for key in rows:
+            if key not in placed:
+                place(key)
+        dead = {k for k in self.items if k not in rows}
+        for key in dead:
+            items, parent_key = self.items.pop(key), self.parents.pop(key)
+            if parent_key not in dead:  # rows under a removed parent go with it
+                (self.items[parent_key][0] if parent_key is not None else root).removeRow(items[0].row())
+
+        self.proxy.setDynamicSortFilter(True)
+        self.proxy.sort(self.header().sortIndicatorSection(), self.header().sortIndicatorOrder())
+        if self.expand_new:
+            for item in created:
+                self.expand(self.proxy.mapFromSource(item.index()))
+
+    def selected_key(self):
+        rows = self.selectionModel().selectedRows()
+        return rows[0].data(self.KEY) if rows else None
+
+    def text(self, key, column):
+        return self.items[key][column].text()
+
+
+def rate(v):
+    return f"{human(v)}/s" if v else ""
+
+
 class LaptopMonitorApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -182,6 +265,8 @@ class LaptopMonitorApp(QMainWindow):
 
         self.refreshers = []
         self.create_dashboard_page()
+        self.create_cores_page()
+        self.create_applications_page()
         self.create_processes_page()
         self.create_details_page()
         self.create_fan_control_page()
@@ -224,6 +309,8 @@ class LaptopMonitorApp(QMainWindow):
             'temp': Chart("Temperature °C", ["CPU", "GPU"], n, ymax=100),
             'mem': Chart("Memory %", ["RAM", "Swap"], n, ymax=100),
             'net': Chart("Network KiB/s", ["Down", "Up"], n),
+            'gpu': Chart("GPU usage %", ["GPU"], n, ymax=100),
+            'disk': Chart("Disk I/O KiB/s", ["Read", "Write"], n),
         }
         grid = QGridLayout()
         for i, chart in enumerate(self.charts.values()):
@@ -231,37 +318,73 @@ class LaptopMonitorApp(QMainWindow):
         layout.addLayout(grid, 1)
         self.add_page("Dashboard", "utilities-system-monitor", page)
 
+    def create_cores_page(self):
+        page = QWidget()
+        grid = QGridLayout(page)
+        self.core_charts = []
+        for i in range(psutil.cpu_count()):
+            chart = Chart(f"Core {i}", [""], self.config.max_history_points, ymax=100)
+            chart.setMinimumHeight(90)
+            grid.addWidget(chart, i // 4, i % 4)
+            self.core_charts.append(chart)
+        self.add_page("CPU Cores", "cpu computer", page)
+
+    def create_applications_page(self):
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        bar = QHBoxLayout()
+        search = QLineEdit(placeholderText="Filter by name…", clearButtonEnabled=True)
+        self.app_count = muted()
+        end_btn = QPushButton(QIcon.fromTheme("process-stop"), "End application")
+        end_btn.clicked.connect(self.end_application)
+        for widget in (search, self.app_count):
+            bar.addWidget(widget)
+        bar.addStretch()
+        bar.addWidget(end_btn)
+        layout.addLayout(bar)
+        self.app_view = LiveTree(["Application", "Processes", "CPU %", "Memory", "Disk read", "Disk write"],
+                                 [str, str, "{:.1f}".format, human, rate, rate], sort_column=2)
+        search.textChanged.connect(self.app_view.proxy.setFilterFixedString)
+        self.app_view.header().resizeSection(0, 260)
+        self.app_pids = {}
+        layout.addWidget(self.app_view)
+        layout.addWidget(muted("Apps launched from the desktop (grouped by their systemd scope). "
+                               "Expand an app to see its processes."))
+        self.add_page("Applications", "preferences-desktop-apps applications-all view-list-icons", page,
+                      self.refresh_applications)
+
     def create_processes_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
         bar = QHBoxLayout()
-        self.proc_filter = QLineEdit(placeholderText="Filter by name…", clearButtonEnabled=True)
+        search = QLineEdit(placeholderText="Filter by name…", clearButtonEnabled=True)
+        self.proc_show = QComboBox()
+        self.proc_show.addItems(["All processes", "My processes", "User processes", "System processes"])
+        self.proc_tree = QCheckBox("Tree view")
         self.proc_count = muted()
         end_btn = QPushButton(QIcon.fromTheme("process-stop"), "End process")
         kill_btn = QPushButton(QIcon.fromTheme("edit-delete"), "Kill")
-        end_btn.clicked.connect(lambda: self.signal_process(False))
-        kill_btn.clicked.connect(lambda: self.signal_process(True))
-        for widget in (self.proc_filter, self.proc_count):
+        end_btn.clicked.connect(lambda: self.send_signal(signal.SIGTERM, "End"))
+        kill_btn.clicked.connect(lambda: self.send_signal(signal.SIGKILL, "Kill"))
+        for widget in (search, self.proc_show, self.proc_tree, self.proc_count):
             bar.addWidget(widget)
         bar.addStretch()
         bar.addWidget(end_btn)
         bar.addWidget(kill_btn)
         layout.addLayout(bar)
 
-        self.proc_model = QStandardItemModel(0, 6)
-        self.proc_model.setHorizontalHeaderLabels(["PID", "Name", "User", "CPU %", "Mem %", "Status"])
-        self.proc_rows = {}
-        self.proc_proxy = QSortFilterProxyModel(filterKeyColumn=1, filterCaseSensitivity=Qt.CaseInsensitive)
-        self.proc_proxy.setSourceModel(self.proc_model)
-        self.proc_filter.textChanged.connect(self.proc_proxy.setFilterFixedString)
-        self.proc_table = QTableView(sortingEnabled=True, alternatingRowColors=True, showGrid=False)
-        self.proc_table.setModel(self.proc_proxy)
-        self.proc_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.proc_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.proc_table.verticalHeader().hide()
-        self.proc_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.proc_table.sortByColumn(3, Qt.DescendingOrder)
-        layout.addWidget(self.proc_table)
+        self.proc_view = LiveTree(["Name", "PID", "User", "CPU %", "Memory", "Disk read", "Disk write",
+                                   "Threads", "Nice", "Status", "Command"],
+                                  [str, str, str, "{:.1f}".format, human, rate, rate, str, str, str, str],
+                                  sort_column=3)
+        self.proc_view.header().resizeSection(0, 220)
+        self.proc_view.setRootIsDecorated(False)
+        self.proc_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.proc_view.customContextMenuRequested.connect(self.process_menu)
+        search.textChanged.connect(self.proc_view.proxy.setFilterFixedString)
+        for signal_ in (self.proc_show.currentIndexChanged, self.proc_tree.toggled):
+            signal_.connect(self.rebuild_processes)
+        layout.addWidget(self.proc_view)
         self.add_page("Processes", "view-process-all", page, self.refresh_processes)
 
     def create_details_page(self):
@@ -406,22 +529,79 @@ class LaptopMonitorApp(QMainWindow):
             QMessageBox.critical(self, "Fan control", "Could not change fan mode. See INSTALL.md → Fan Control Setup.")
             self.sync_mode_radio()
 
-    def signal_process(self, force):
-        rows = self.proc_table.selectionModel().selectedRows()
-        if not rows:
+    def selected_process(self):
+        pid = self.proc_view.selected_key()
+        return (pid, self.proc_view.text(pid, 0)) if pid is not None else (None, None)
+
+    def send_signal(self, sig, verb=None):
+        """Send sig to the selected process; verb set = ask first"""
+        pid, name = self.selected_process()
+        if pid is None:
             return
-        pid = int(self.proc_proxy.index(rows[0].row(), 0).data())
-        name = self.proc_proxy.index(rows[0].row(), 1).data()
-        verb = 'Kill' if force else 'End'
-        if QMessageBox.question(self, "Confirm", f"{verb} {name} (PID {pid})?") != QMessageBox.Yes:
+        if verb and QMessageBox.question(self, "Confirm", f"{verb} {name} (PID {pid})?") != QMessageBox.Yes:
             return
         try:
-            p = psutil.Process(pid)
-            p.kill() if force else p.terminate()
+            psutil.Process(pid).send_signal(sig)
         except psutil.NoSuchProcess:
             pass
         except psutil.AccessDenied:
             QMessageBox.critical(self, "Permission denied", f"{name} belongs to another user.")
+
+    def renice_process(self):
+        pid, name = self.selected_process()
+        try:
+            current = psutil.Process(pid).nice()
+        except (psutil.Error, ValueError):
+            return
+        value, ok = QInputDialog.getInt(self, "Set priority", f"Nice value for {name} (PID {pid})\n"
+                                        "-20 = highest priority, 19 = lowest", current, -20, 19)
+        if not ok or value == current:
+            return
+        try:
+            psutil.Process(pid).nice(value)
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.AccessDenied:  # raising priority or touching another user's process needs root
+            try:
+                ok = subprocess.run(["pkexec", "renice", "-n", str(value), "-p", str(pid)],
+                                    capture_output=True, timeout=300).returncode == 0
+            except (OSError, subprocess.TimeoutExpired):
+                ok = False
+            if not ok:
+                QMessageBox.critical(self, "Set priority", "Priority was not changed (cancelled or not permitted).")
+
+    def process_menu(self, pos):
+        if self.proc_view.selected_key() is None:
+            return
+        menu = QMenu(self)
+        menu.addAction(QIcon.fromTheme("process-stop"), "End process", lambda: self.send_signal(signal.SIGTERM, "End"))
+        menu.addAction(QIcon.fromTheme("edit-delete"), "Kill", lambda: self.send_signal(signal.SIGKILL, "Kill"))
+        signals = menu.addMenu("Send signal")
+        for sig, desc in ((signal.SIGSTOP, "pause"), (signal.SIGCONT, "resume"), (signal.SIGHUP, "hang up"),
+                          (signal.SIGINT, "interrupt"), (signal.SIGUSR1, ""), (signal.SIGUSR2, "")):
+            signals.addAction(f"{sig.name} ({desc})" if desc else sig.name, lambda s=sig: self.send_signal(s))
+        menu.addSeparator()
+        menu.addAction("Set priority…", self.renice_process)
+        menu.exec(self.proc_view.viewport().mapToGlobal(pos))
+
+    def end_application(self):
+        key = self.app_view.selected_key()
+        if key is None:
+            return
+        key = key if isinstance(key, str) else self.app_view.parents[key]  # a process row → its app
+        name, pids = self.app_view.text(key, 0), self.app_pids.get(key, [])
+        if QMessageBox.question(self, "Confirm", f"End {name} ({len(pids)} processes)?") != QMessageBox.Yes:
+            return
+        denied = False
+        for pid in pids:
+            try:
+                psutil.Process(pid).terminate()
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.AccessDenied:
+                denied = True
+        if denied:
+            QMessageBox.critical(self, "Permission denied", f"Some processes of {name} belong to another user.")
 
     def save_settings(self):
         for key, widget in self.setting_widgets.items():
@@ -489,11 +669,19 @@ class LaptopMonitorApp(QMainWindow):
         down = sum(r[0] for nic, r in rates.items() if nic != 'lo') / 1024
         up = sum(r[1] for nic, r in rates.items() if nic != 'lo') / 1024
         info, gpu, bat = m.get_cpu_info(), m.get_gpu_info(), m.get_battery()
+        self.charts['gpu'].push(float(gpu['util']) if str(gpu.get('util', '')).isdigit() else 0)
 
         self.charts['cpu'].push(cpu)
         self.charts['temp'].push(cpu_temp, gpu_temp)
         self.charts['mem'].push(vm.percent, swap.percent)
         self.charts['net'].push(down, up)
+        self.disk_rates = m.get_disk_rates()  # stateful like net_rates; Details reuses it
+        disks = [r for d, r in self.disk_rates.items()
+                 if os.path.exists(f"/sys/block/{d}") and not d.startswith(('loop', 'ram', 'zram'))]
+        self.charts['disk'].push(sum(r[0] for r in disks) / 1024, sum(r[1] for r in disks) / 1024)
+        self.per_cpu = m.get_per_cpu_usage()
+        for chart, pct in zip(self.core_charts, self.per_cpu):
+            chart.push(pct)
 
         self.tile("CPU", f"{cpu:.0f}%", f"{info['freq_mhz']} MHz · load {info['load_avg'][0]:.2f}")
         self.tile("CPU Temp", f"{cpu_temp:.0f}°C", f"alert at {self.config.cpu_temp_threshold:.0f}°C")
@@ -519,32 +707,46 @@ class LaptopMonitorApp(QMainWindow):
         self.notify('bat', bool(bat) and not bat['plugged'] and bat['percent'] <= self.config.battery_low_percent,
                     "Battery low", f"{bat['percent']:.0f}% remaining" if bat else "")
 
+    def rebuild_processes(self):
+        self.proc_view.clear()
+        self.proc_view.expand_new = self.proc_tree.isChecked()
+        self.proc_view.setRootIsDecorated(self.proc_tree.isChecked())
+        self.refresh_processes()
+
     def refresh_processes(self):
-        model, alive = self.proc_model, set()
-        self.proc_proxy.setDynamicSortFilter(False)  # one re-sort per refresh, not one per changed cell
+        show, tree, me = self.proc_show.currentIndex(), self.proc_tree.isChecked(), os.getuid()
+        rows = {}
         for p in self.monitor.get_processes():
-            pid = p['pid']
-            alive.add(pid)
-            values = (pid, p['name'] or '', p['username'] or '', round(p['cpu_percent'] or 0, 1),
-                      round(p['memory_percent'] or 0, 1), p['status'])
-            items = self.proc_rows.get(pid)
-            if items is None:
-                items = self.proc_rows[pid] = [QStandardItem() for _ in values]
-                for item in items[3:5]:
-                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                model.appendRow(items)
-            for item, value in zip(items, values):
-                if item.data(Qt.DisplayRole) != value:
-                    item.setData(value, Qt.DisplayRole)
-        for row in reversed(range(model.rowCount())):
-            pid = model.item(row, 0).data(Qt.DisplayRole)
-            if pid not in alive:
-                model.removeRow(row)
-                del self.proc_rows[pid]
-        self.proc_proxy.setDynamicSortFilter(True)
-        header = self.proc_table.horizontalHeader()
-        self.proc_proxy.sort(header.sortIndicatorSection(), header.sortIndicatorOrder())
-        self.proc_count.setText(f"{self.proc_proxy.rowCount()} of {model.rowCount()} processes")
+            uid = p['uids'].real if p['uids'] else 0
+            if (show == 1 and uid != me) or (show == 2 and uid < 1000) or (show == 3 and uid >= 1000):
+                continue
+            mem = p['memory_info']
+            rows[p['pid']] = (p['ppid'] if tree else None,
+                              (p['name'] or '', p['pid'], p['username'] or '', round(p['cpu_percent'] or 0, 1),
+                               mem.rss if mem else None, p['read'], p['write'], p['num_threads'], p['nice'],
+                               p['status'], ' '.join(p['cmdline'] or [])), None)
+        self.proc_view.update(rows)
+        self.proc_count.setText(f"{len(rows)} processes")
+
+    def refresh_applications(self):
+        apps, rows = {}, {}
+        for p in self.monitor.get_processes():
+            app = app_id(p['pid'])
+            if app:
+                apps.setdefault(f"app:{app}", []).append(p)
+        for key, procs in apps.items():
+            name, icon = desktop_entry(key[4:])
+            mem = [p['memory_info'].rss for p in procs if p['memory_info']]
+            total = lambda field: sum(p[field] or 0 for p in procs)
+            rows[key] = (None, (name, len(procs), round(total('cpu_percent'), 1), sum(mem), total('read'),
+                                total('write')), QIcon.fromTheme(icon) if icon else None)
+            for p in procs:
+                rows[p['pid']] = (key, (f"{p['name']}  ({p['pid']})", None, round(p['cpu_percent'] or 0, 1),
+                                        p['memory_info'].rss if p['memory_info'] else None, p['read'], p['write']),
+                                  None)
+        self.app_pids = {key: [p['pid'] for p in procs] for key, procs in apps.items()}
+        self.app_view.update(rows)
+        self.app_count.setText(f"{len(apps)} applications")
 
     def refresh_details(self):
         m, d = self.monitor, self.details
@@ -553,7 +755,7 @@ class LaptopMonitorApp(QMainWindow):
                              f"{info['freq_mhz']} / {info['freq_max_mhz']} MHz"))
         d.row('cpu/load', "Load average (1/5/15 min)", (" / ".join(f"{x:.2f}" for x in info['load_avg']), ""), 'cpu')
         freqs = psutil.cpu_freq(percpu=True)
-        for i, pct in enumerate(m.get_per_cpu_usage()):
+        for i, pct in enumerate(self.per_cpu):
             mhz = f"{freqs[i].current:.0f} MHz" if i < len(freqs) else ""
             d.row(f'cpu/{i}', f"Core {i}", (f"{pct:.0f}%", mhz), 'cpu')
 
@@ -596,7 +798,7 @@ class LaptopMonitorApp(QMainWindow):
         for p, u in m.get_partitions():
             d.row(f'disks/{p.mountpoint}', f"{p.mountpoint}  ({p.device}, {p.fstype})",
                   (f"{human(u.used)} / {human(u.total)}", f"{u.percent}% used"), 'disks')
-        for disk, (r, w) in sorted(m.get_disk_rates().items()):
+        for disk, (r, w) in sorted(self.disk_rates.items()):
             if not disk.startswith(('loop', 'ram', 'zram')):
                 d.row(f'disks/io/{disk}', f"{disk} I/O", (f"read {human(r)}/s", f"write {human(w)}/s"), 'disks')
 

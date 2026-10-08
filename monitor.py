@@ -3,8 +3,10 @@
 System monitoring module for Laptop Monitor
 """
 
+import functools
 import glob
 import os
+import re
 import subprocess
 import time
 
@@ -35,7 +37,7 @@ class Monitor:
 
     def __init__(self, gpu_poll_seconds=10):
         self.gpu_poll_seconds = gpu_poll_seconds
-        self._last_net = self._last_disk = None
+        self._last_net = self._last_disk = self._last_pio = None
         self._smi = None
         self._smi_time = 0
         self._gpu_cache = {}
@@ -206,8 +208,40 @@ class Monitor:
         return info
 
     def get_processes(self):
-        attrs = ['pid', 'name', 'username', 'cpu_percent', 'memory_percent', 'status']
-        return [p.info for p in psutil.process_iter(attrs)]
+        """Process info dicts; 'read'/'write' are disk bytes/s since the previous call (None if unreadable)"""
+        attrs = ['pid', 'ppid', 'name', 'username', 'uids', 'cpu_percent', 'memory_info', 'num_threads',
+                 'nice', 'status', 'cmdline', 'io_counters']
+        now, procs = time.time(), [p.info for p in psutil.process_iter(attrs, ad_value=None)]
+        counters = {p['pid']: c for p in procs if (c := p.pop('io_counters'))}
+        rates = _rates(self._last_pio, (now, counters), lambda c: (c.read_bytes, c.write_bytes))
+        self._last_pio = (now, counters)
+        for p in procs:
+            p['read'], p['write'] = rates.get(p['pid'], (None, None))
+        return procs
+
+
+def app_id(pid):
+    """Desktop app a process belongs to, from its systemd unit (app-<id>[@x|-N].scope/.service), else None"""
+    path = (_read(f"/proc/{pid}/cgroup") or "").rpartition("::")[2]
+    for unit in reversed(path.split("/")):
+        m = re.fullmatch(r"app-(.+?)(?:@[^.]*|-\d+)?\.(?:scope|service)", unit)
+        if m:
+            return re.sub(r"\\x([0-9a-fA-F]{2})", lambda x: chr(int(x[1], 16)), m[1])
+    return None
+
+
+@functools.lru_cache(maxsize=None)
+def desktop_entry(app):
+    """(Name, Icon) from the app's .desktop file; falls back to the id (also tried without a launcher prefix)"""
+    home = os.environ.get('XDG_DATA_HOME', os.path.expanduser('~/.local/share'))
+    dirs = [home] + os.environ.get('XDG_DATA_DIRS', '/usr/local/share:/usr/share').split(':')
+    for candidate in filter(None, (app, app.partition('-')[2])):
+        for d in dirs:
+            text = _read(f"{d}/applications/{candidate}.desktop")
+            if text:
+                fields = dict(line.split('=', 1) for line in text.split('\n[', 1)[0].splitlines() if '=' in line)
+                return fields.get('Name', app), fields.get('Icon', '')
+    return app, ''
 
 
 def _rates(prev, cur, pick):

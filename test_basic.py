@@ -115,6 +115,27 @@ def test_fanctl_validation():
         print(f"✗ fanctl validation error: {e!r}")
         return False
 
+def test_live_tree():
+    """LiveTree keeps rows keyed: reparents adopted children, drops dead rows (and their dead children)"""
+    try:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance() or QApplication([])
+        from main import LiveTree
+        t = LiveTree(["Name", "CPU"], [str, "{:.1f}".format], sort_column=1)
+        t.update({1: (None, ("init", 0.0), None), 5: (1, ("shell", 1.0), None), 9: (5, ("vim", 2.0), None),
+                  7: (5, ("sub", 0.0), None), 8: (7, ("subsub", 0.0), None)})
+        assert t.source.rowCount() == 1 and t.items[1][0].rowCount() == 1 and t.items[5][0].rowCount() == 2
+        # shell dies: vim is adopted by init; sub and its child die too
+        t.update({1: (None, ("init", 0.0), None), 9: (1, ("vim", 3.0), None)})
+        assert set(t.items) == {1, 9} and t.items[1][0].rowCount() == 1
+        assert t.items[9][1].text() == "3.0" and t.parents[9] == 1
+        print("✓ LiveTree test")
+        return True
+    except Exception as e:
+        print(f"✗ LiveTree test error: {e!r}")
+        return False
+
 def main():
     """Run all tests"""
     print("Running basic tests for Laptop Monitor...\n")
@@ -126,6 +147,7 @@ def main():
         test_utils,
         test_fan_control,
         test_fanctl_validation,
+        test_live_tree,
     ]
 
     passed = 0

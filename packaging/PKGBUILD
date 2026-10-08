@@ -1,6 +1,6 @@
 # Maintainer: lucifer-0-0-1 <amritam.leon@gmail.com>
 pkgname=laptop-monitor
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Lightweight laptop monitor: temperatures, usage, GPU, battery, processes and PWM fan control"
 arch=('any')
