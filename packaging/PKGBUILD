@@ -11,7 +11,7 @@ optdepends=('polkit: fan control without sudo'
             'nvidia-utils: NVIDIA GPU usage, power and VRAM stats'
             'libnotify: desktop alerts for high temperature and low battery')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # run `updpkgsums` after the v$pkgver tag is pushed
+sha256sums=('7aa10b078d4e91fe5979a332976ebec9b88b8379d86d89ee215dfc3f00fb34ab')
 
 package() {
   cd "SysMon-$pkgver"
