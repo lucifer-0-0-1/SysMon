@@ -5,7 +5,7 @@ set -eu
 cd "$(dirname "$0")/.."
 dest=$1
 share="$dest/usr/share/laptop-monitor"
-install -Dm644 -t "$share" main.py monitor.py fan_control.py config.py utils.py laptop-monitor.svg
+install -Dm644 -t "$share" main.py monitor.py fan_control.py config.py utils.py network.py laptop-monitor.svg
 install -Dm644 -t "$share/plugins" plugins/*.py
 install -Dm755 fanctl "$dest/usr/lib/laptop-monitor/fanctl"
 install -Dm755 packaging/laptop-monitor "$dest/usr/bin/laptop-monitor"

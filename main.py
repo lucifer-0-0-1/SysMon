@@ -28,6 +28,7 @@ sys.path.insert(0, APP_DIR)
 from config import DEFAULTS, Config
 from fan_control import FanController, install_helper
 from monitor import Monitor
+import network as net
 from utils import Utils
 
 VERSION = "1.1.0"
@@ -184,6 +185,7 @@ class LaptopMonitorApp(QMainWindow):
         self.create_processes_page()
         self.create_details_page()
         self.create_fan_control_page()
+        self.create_network_page()
         self.create_plugins_page()
         self.create_settings_page()
         self.nav.setCurrentRow(0)
@@ -318,6 +320,24 @@ class LaptopMonitorApp(QMainWindow):
                                "Fans return to Auto when the app closes."))
         layout.addStretch()
         self.add_page("Fan Control", "sensors-fan-symbolic fan weather-windy", page, self.refresh_fans)
+
+    def create_network_page(self):
+        page = QWidget()
+        self.net_layout = QVBoxLayout(page)
+        self.net_layout.addWidget(muted("Switch a connection's DNS for this session only. \"Network DNS\" uses the "
+                                        "servers your network hands out (e.g. campus DNS for internal sites); "
+                                        "\"Profile DNS\" restores what the connection is configured with. "
+                                        "Reconnecting also restores the profile."))
+        self.net_cards = {}
+        self.net_layout.addStretch()
+        self.add_page("Networking", "network-wired network-workgroup preferences-system-network", page,
+                      self.refresh_network)
+
+    def on_dns_switch(self, device, network_dns):
+        ok, err = net.use_network_dns(device) if network_dns else net.use_profile_dns(device)
+        if not ok:
+            QMessageBox.critical(self, "Networking", f"Could not change DNS on {device}:\n{err}")
+        self.refresh_network()
 
     def create_plugins_page(self):
         page = QWidget()
@@ -595,6 +615,27 @@ class LaptopMonitorApp(QMainWindow):
             if not slider.isSliderDown():
                 slider.setValue(self.fan_controller.get_fan_speed(n))
             rpm.setText(f"{self.fan_controller.get_fan_rpm(n)} RPM")
+
+    def refresh_network(self):
+        devices = net.devices()
+        for device in [d for d in self.net_cards if d not in devices]:
+            self.net_cards.pop(device)[0].deleteLater()
+        for device, connection in devices.items():
+            if device not in self.net_cards:
+                card = QFrame(objectName="card")
+                row = QHBoxLayout(card)
+                label = QLabel()
+                row.addWidget(label, 1)
+                for text, network_dns in (("Network DNS", True), ("Profile DNS", False)):
+                    button = QPushButton(text)
+                    button.clicked.connect(lambda _=False, d=device, n=network_dns: self.on_dns_switch(d, n))
+                    row.addWidget(button)
+                self.net_layout.insertWidget(self.net_layout.count() - 1, card)
+                self.net_cards[device] = (card, label)
+            active, dhcp = net.dns_info(device)
+            self.net_cards[device][1].setText(
+                f"<b>{connection}</b> ({device})<br>DNS in use: {', '.join(active) or '—'}"
+                f"<br><span style='color:gray'>Network offers: {', '.join(dhcp) or '—'}</span>")
 
     def refresh_plugins(self):
         v = self.plugin_view
