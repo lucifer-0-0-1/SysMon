@@ -10,6 +10,7 @@ import subprocess
 
 # Installed by the package; run through pkexec (polkit) to write pwm files as root
 HELPER = "/usr/lib/laptop-monitor/fanctl"
+POLICY = "org.laptopmonitor.fanctl.policy"
 
 
 def find_pwm_hwmon(base="/sys/class/hwmon"):
@@ -20,11 +21,33 @@ def find_pwm_hwmon(base="/sys/class/hwmon"):
     return None
 
 
+def install_helper():
+    """Install fanctl + its polkit policy system-wide with one admin prompt (AppImage and source runs)"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    # Source-tree layout first, then the installed layout (an AppImage carries usr/ like a package)
+    fanctl = next((p for p in (f"{here}/fanctl", f"{here}/../../lib/laptop-monitor/fanctl")
+                   if os.path.exists(p)), None)
+    policy = next((p for p in (f"{here}/packaging/{POLICY}", f"{here}/../polkit-1/actions/{POLICY}")
+                   if os.path.exists(p)), None)
+    if not (fanctl and policy):
+        return False
+    script = f'install -Dm755 "$1" {HELPER} && install -Dm644 "$2" /usr/share/polkit-1/actions/{POLICY}'
+    try:
+        return subprocess.run(["pkexec", "/bin/sh", "-c", script, "sh", fanctl, policy],
+                              timeout=300).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 class FanController:
     def __init__(self, hwmon=None):
         self.hwmon = hwmon or find_pwm_hwmon()
         self.available = self.hwmon is not None
         self.fan_count = len(glob.glob(f"{self.hwmon}/pwm[0-9]")) if self.available else 0
+
+    def needs_helper(self):
+        """True when fan writes have no route: no installed helper and pwm files not writable"""
+        return self.available and not os.path.exists(HELPER) and not os.access(self._path("pwm1"), os.W_OK)
 
     def _path(self, name):
         return os.path.join(self.hwmon or "", name)

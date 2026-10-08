@@ -26,11 +26,11 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 
 from config import DEFAULTS, Config
-from fan_control import FanController
+from fan_control import FanController, install_helper
 from monitor import Monitor
 from utils import Utils
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 human = Utils.bytes_to_human_readable
 STYLE = """
 QFrame#card { background: palette(base); border: 1px solid palette(midlight); border-radius: 10px; }
@@ -277,6 +277,15 @@ class LaptopMonitorApp(QMainWindow):
             self.add_page("Fan Control", "sensors-fan-symbolic fan weather-windy", page)
             return
 
+        if self.fan_controller.needs_helper():
+            self.helper_card = QFrame(objectName="card")
+            row = QHBoxLayout(self.helper_card)
+            row.addWidget(muted("Fan control needs a small helper installed system-wide (one admin password prompt)."), 1)
+            button = QPushButton(QIcon.fromTheme("security-high"), "Enable fan control")
+            button.clicked.connect(self.on_install_helper)
+            row.addWidget(button)
+            layout.addWidget(self.helper_card)
+
         mode_card = QFrame(objectName="card")
         mode = QHBoxLayout(mode_card)
         mode.addWidget(QLabel("<b>Control mode</b>"))
@@ -294,7 +303,7 @@ class LaptopMonitorApp(QMainWindow):
         for n in range(1, self.fan_controller.fan_count + 1):
             card = QFrame(objectName="card")
             row = QGridLayout(card)
-            value, rpm = QLabel("0"), QLabel("0 RPM", objectName="big")
+            value, rpm = QLabel("PWM 0  (0%)"), QLabel("0 RPM", objectName="big")
             slider = QSlider(Qt.Horizontal, minimum=0, maximum=255)
             slider.valueChanged.connect(lambda v, lbl=value: lbl.setText(f"PWM {v}  ({v * 100 // 255}%)"))
             slider.sliderReleased.connect(lambda n=n: self.on_fan_release(n))
@@ -356,6 +365,13 @@ class LaptopMonitorApp(QMainWindow):
     def sync_mode_radio(self):
         (self.manual_radio if self.fan_controller.get_mode() == 1 else self.auto_radio).setChecked(True)
 
+    def on_install_helper(self):
+        if install_helper():
+            self.helper_card.hide()
+            self.statusBar().showMessage("Fan control enabled", 3000)
+        else:
+            QMessageBox.critical(self, "Fan control", "Helper was not installed (cancelled, or pkexec/polkit missing).")
+
     def on_fan_release(self, n):
         if self.manual_radio.isChecked():
             slider = next(s for m, s, _ in self.fan_widgets if m == n)
@@ -409,7 +425,7 @@ class LaptopMonitorApp(QMainWindow):
             self.alerted.add(key)
             if self.config.notifications and shutil.which("notify-send"):
                 subprocess.Popen(["notify-send", "-u", "critical", "-a", "Laptop Monitor",
-                                  "-i", "utilities-system-monitor", title, body])
+                                  "-i", os.path.join(APP_DIR, "laptop-monitor.svg"), title, body])
 
     # ------------------------------------------------------------ plugins
     def load_plugins(self):
@@ -600,7 +616,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Laptop Monitor")
     app.setDesktopFileName("laptop-monitor")  # Wayland: match the .desktop entry for the taskbar icon
-    app.setWindowIcon(QIcon.fromTheme("utilities-system-monitor"))
+    app.setWindowIcon(QIcon(os.path.join(APP_DIR, "laptop-monitor.svg")))
     app.setStyleSheet(STYLE)
     window = LaptopMonitorApp()
     window.show()

@@ -1,0 +1,43 @@
+# Push a tag like v1.2.0 → builds the .deb and AppImage and attaches them to a GitHub Release.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Same image the packaging scripts are tested in; also keeps bundled libs on an old glibc
+    container: ubuntu:22.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git curl file dpkg-dev python3-psutil \
+            python3-dotenv libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0 libxcb-util1
+
+      - uses: actions/checkout@v5
+
+      - name: Tag must match VERSION in main.py
+        run: test "v$(sed -n 's/^VERSION = "\(.*\)"/\1/p' main.py)" = "$GITHUB_REF_NAME"
+
+      - name: Self-checks
+        run: python3 test_basic.py
+
+      - name: Build .deb
+        run: packaging/build-deb.sh
+
+      - name: Build AppImage
+        run: packaging/build-appimage.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Laptop Monitor ${{ github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
